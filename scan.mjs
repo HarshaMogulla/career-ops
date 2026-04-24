@@ -42,6 +42,20 @@ function detectApi(company) {
 
   const url = company.careers_url || '';
 
+  // Workday — POST-based, must precede generic fallbacks
+  const wdMatch = url.match(/\/\/([^./]+)\.(wd\d+)\.myworkdayjobs\.com(?:\/en-US)?\/([^/?#]+)/);
+  if (wdMatch) {
+    const [, tenant, shard, site] = wdMatch;
+    return {
+      type: 'workday',
+      url: `https://${tenant}.${shard}.myworkdayjobs.com/wday/cxs/${tenant}/${site}/jobs`,
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify({ appliedFacets: {}, limit: 20, offset: 0, searchText: '' }),
+      tenant, shard, site,
+    };
+  }
+
   // Ashby
   const ashbyMatch = url.match(/jobs\.ashbyhq\.com\/([^/?#]+)/);
   if (ashbyMatch) {
@@ -104,15 +118,33 @@ function parseLever(json, companyName) {
   }));
 }
 
-const PARSERS = { greenhouse: parseGreenhouse, ashby: parseAshby, lever: parseLever };
+function parseWorkday(json, companyName, apiCtx) {
+  const jobs = json.jobPostings || [];
+  const { tenant, shard, site } = apiCtx || {};
+  return jobs.map(j => ({
+    title: j.title || '',
+    url: tenant && shard && site
+      ? `https://${tenant}.${shard}.myworkdayjobs.com/${site}${j.externalPath || ''}`
+      : j.externalPath || '',
+    company: companyName,
+    location: j.locationsText || '',
+  }));
+}
+
+const PARSERS = { greenhouse: parseGreenhouse, ashby: parseAshby, lever: parseLever, workday: parseWorkday };
 
 // ── Fetch with timeout ──────────────────────────────────────────────
 
-async function fetchJson(url) {
+async function fetchJson(url, options = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
   try {
-    const res = await fetch(url, { signal: controller.signal });
+    const res = await fetch(url, {
+      signal: controller.signal,
+      method: options.method || 'GET',
+      headers: options.headers || {},
+      body: options.body,
+    });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return await res.json();
   } finally {
@@ -131,6 +163,17 @@ function buildTitleFilter(titleFilter) {
     const hasPositive = positive.length === 0 || positive.some(k => lower.includes(k));
     const hasNegative = negative.some(k => lower.includes(k));
     return hasPositive && !hasNegative;
+  };
+}
+
+function buildLocationFilter(locFilter) {
+  if (!locFilter || !locFilter.require_us) return () => true;
+  const exclude = (locFilter.exclude || []).map(k => k.toLowerCase());
+
+  return (location) => {
+    if (!location) return true;  // missing location = don't filter out
+    const lower = location.toLowerCase();
+    return !exclude.some(k => lower.includes(k));
   };
 }
 
@@ -264,6 +307,7 @@ async function main() {
   const config = parseYaml(readFileSync(PORTALS_PATH, 'utf-8'));
   const companies = config.tracked_companies || [];
   const titleFilter = buildTitleFilter(config.title_filter);
+  const locationFilter = buildLocationFilter(config.location_filter);
 
   // 2. Filter to enabled companies with detectable APIs
   const targets = companies
@@ -290,14 +334,19 @@ async function main() {
   const errors = [];
 
   const tasks = targets.map(company => async () => {
-    const { type, url } = company._api;
+    const api = company._api;
+    const { type, url } = api;
     try {
-      const json = await fetchJson(url);
-      const jobs = PARSERS[type](json, company.name);
+      const json = await fetchJson(url, { method: api.method, headers: api.headers, body: api.body });
+      const jobs = PARSERS[type](json, company.name, api);
       totalFound += jobs.length;
 
       for (const job of jobs) {
         if (!titleFilter(job.title)) {
+          totalFiltered++;
+          continue;
+        }
+        if (!locationFilter(job.location)) {
           totalFiltered++;
           continue;
         }
@@ -326,6 +375,17 @@ async function main() {
   if (!dryRun && newOffers.length > 0) {
     appendToPipeline(newOffers);
     appendToScanHistory(newOffers, date);
+
+    // Auto-regenerate Excel tracker view so the new pipeline entries show up
+    try {
+      const { execFileSync } = await import('child_process');
+      const { dirname } = await import('path');
+      const { fileURLToPath } = await import('url');
+      const __dirname = dirname(fileURLToPath(import.meta.url));
+      execFileSync('python3', [`${__dirname}/export_tracker.py`], { stdio: 'inherit' });
+    } catch (e) {
+      console.log('(xlsx export skipped — run `npm run tracker` manually)');
+    }
   }
 
   // 6. Print summary

@@ -324,6 +324,15 @@ if (!DRY_RUN) {
 console.log(`\n📊 Summary: +${added} added, 🔄${updated} updated, ⏭️${skipped} skipped`);
 if (DRY_RUN) console.log('(dry-run — no changes written)');
 
+// Auto-regenerate Excel tracker view
+if (!DRY_RUN && (added > 0 || updated > 0)) {
+  try {
+    execFileSync('python3', [join(CAREER_OPS, 'export_tracker.py')], { stdio: 'inherit' });
+  } catch (e) {
+    console.log('(xlsx export skipped — run `python3 export_tracker.py` manually)');
+  }
+}
+
 // Optional verify
 if (VERIFY && !DRY_RUN) {
   console.log('\n--- Running verification ---');

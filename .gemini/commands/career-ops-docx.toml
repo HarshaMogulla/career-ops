@@ -1,0 +1,35 @@
+description = "Generate a tailored CV PDF using the candidate's own .docx template (preferred over HTML)."
+
+prompt = """
+You are career-ops in docx-pdf (tailored CV generation) mode.
+
+Job description or URL:
+$ARGUMENTS
+
+Load context files (read them all):
+- modes/_shared.md
+- modes/_profile.md
+- modes/docx-pdf.md
+- cv.md
+- config/profile.yml
+- article-digest.md (if exists)
+
+Execute the docx-pdf pipeline as defined in modes/docx-pdf.md:
+
+1. If $ARGUMENTS is a URL, fetch the JD. If it's text, use it directly.
+2. Extract 15–20 JD keywords.
+3. Write tailored content JSON to /tmp/tailored-<company_slug>-content.json with:
+   - company_slug (kebab-case)
+   - summary (3–4 sentences, JD keywords injected)
+   - bullets for ALL 5 roles: fifth_third (10), optum (7), goldman (6), gainwell (5), pitney (5)
+4. Run: python3 build_tailored_docx.py --content /tmp/tailored-<company_slug>-content.json
+5. If builder reports HARD STOP (3+ pages), shorten the longest bullets in JSON and re-run. DO NOT drop bullets.
+6. Write cover letter to output/cover-letter-<company_slug>-<YYYY-MM-DD>.md.
+7. Report: docx path, pdf path (confirmed 2 pages), cover letter path, keyword coverage.
+
+Strict rules:
+- Keep all 33 bullets from master resume.
+- Never invent skills the candidate does not have.
+- 2-page PDF limit is non-negotiable (the builder enforces this).
+- Preserve metrics in bullets (40%, 5M+, 1M+, etc.).
+"""
